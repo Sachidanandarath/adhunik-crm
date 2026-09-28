@@ -3,15 +3,26 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Adhunik Pest Control - CRM</title>
+  <title>AdhunikPestControl - CRM</title>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#1e40af">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="apple-touch-icon" href="/logo.png">
+  <link rel="icon" type="image/png" href="/logo.png">
   <link rel="stylesheet" href="/css/style.css">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>#trackingMap{height:480px;border-radius:12px;z-index:0}</style>
 </head>
 <body>
   <!-- SIDEBAR -->
   <div class="sidebar" id="sidebar">
     <div class="sidebar-header">
       <div class="logo"><img src="/logo.jpg" alt="Adhunik Pest Control" class="logo-img"><span class="logo-text">Adhunik Pest Control</span></div>
+      <button class="sidebar-close" id="sidebarClose" title="Close menu">&times;</button>
     </div>
     <nav class="sidebar-nav" id="sidebarNav">
       <ul>
@@ -53,6 +64,9 @@
         <li><a href="#" data-page="invoices"><span class="nav-icon">🧾</span><span class="sidebar-text">Invoices</span></a></li>
         <li><a href="#" data-page="payment-reminders"><span class="nav-icon">🔔</span><span class="sidebar-text">Payment Reminders</span></a></li>
         <li><a href="#" data-page="customer-outstandings"><span class="nav-icon">📈</span><span class="sidebar-text">Customer Outstandings</span></a></li>
+        <li><a href="#" data-page="gst-reports"><span class="nav-icon">🧾</span><span class="sidebar-text">GST Reports (GSTR-1)</span></a></li>
+                <li><a href="#" data-page="bill-generator"><span class="nav-icon">🧾</span><span class="sidebar-text">Bill Generator (GST/Non-GST)</span></a></li>
+                <li><a href="#" data-page="certificate"><span class="nav-icon">📜</span><span class="sidebar-text">Certificate Generator</span></a></li>
         <li class="has-submenu">
           <a href="#" data-toggle="collapse" data-target="#sidebarComplaints"><span class="nav-icon">⚠️</span><span class="sidebar-text">Complaints</span><span class="menu-arrow">▸</span></a>
           <ul class="sub-menu" id="sidebarComplaints">
@@ -141,7 +155,14 @@
   <!-- TOAST -->
   <div class="toast-container" id="toastContainer"></div>
 
+  <!-- Back to Technician App (only shown when opened from the technician app/APK) -->
+  <a id="backToTech" href="./tech.html" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#1e40af;color:#fff;padding:12px 16px;border-radius:999px;text-decoration:none;font-size:13px;font-weight:600;box-shadow:0 4px 12px rgba(0,0,0,.25)">← Technician App</a>
+  <script>if (new URLSearchParams(location.search).get('from') === 'tech') document.getElementById('backToTech').style.display = 'block';</script>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="/js/print-templates.js"></script>
   <script src="/js/app.js"></script>
+  <script>if ('serviceWorker' in navigator) { window.addEventListener('load', () => { navigator.serviceWorker.register('/sw.js').catch(() => {}); }); }</script>
 </body>
 </html>

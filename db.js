@@ -1,10 +1,21 @@
 const initSqlJs = require('sql.js');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
-const dbPath = path.join(__dirname, 'crm.db');
+// On Vercel (serverless) only /tmp is writable; elsewhere keep crm.db next to the code
+const dbPath = process.env.VERCEL
+  ? '/tmp/crm.db'
+  : path.join(__dirname, 'crm.db');
 let db = null;
 let SQL = null;
+
+// sql.js throws on undefined params (better-sqlite3 used to accept them).
+// Coerce undefined to NULL so optional form fields save correctly.
+function sanitizeParams(params) {
+  if (!Array.isArray(params)) return params;
+  return params.map(p => (p === undefined ? null : p));
+}
 
 // Wrapper to mimic better-sqlite3 API
 class DbWrapper {
@@ -14,14 +25,14 @@ class DbWrapper {
     const self = this;
     return {
       run(...params) {
-        self._db.run(sql, params);
+        self._db.run(sql, sanitizeParams(params));
         return { lastInsertRowid: self._db.exec("SELECT last_insert_rowid() as id")[0]?.values[0]?.[0] || 0, changes: self._db.getRowsModified() };
       },
       get(...params) {
         let stmt;
         try {
           stmt = self._db.prepare(sql);
-          stmt.bind(params);
+          stmt.bind(sanitizeParams(params));
           if (stmt.step()) { return stmt.getAsObject(); }
           return undefined;
         } finally { if (stmt) stmt.free(); }
@@ -30,7 +41,7 @@ class DbWrapper {
         let stmt;
         try {
           stmt = self._db.prepare(sql);
-          stmt.bind(params);
+          stmt.bind(sanitizeParams(params));
           const results = [];
           while (stmt.step()) { results.push(stmt.getAsObject()); }
           return results;
@@ -59,16 +70,208 @@ class DbWrapper {
 }
 
 function saveDb() {
-  if (db && db._db) {
+  if (!db || !db._db) return;
+  try {
     const data = db._db.export();
     const buffer = Buffer.from(data);
     fs.writeFileSync(dbPath, buffer);
+  } catch (e) {
+    console.error('Failed to save database:', e.message);
   }
 }
 
-async function initializeDatabase() {
-  SQL = await initSqlJs();
-  
+// ---------- Cloud persistence (Vercel Blob) ----------
+// On serverless /tmp is wiped on every restart/redeploy, so the DB file is
+// mirrored to a Vercel Blob store and restored on each cold start.
+let _blobLib;
+function blobEnabled() {
+  // Cloud sync only ever happens on Vercel itself. Local/dev machines must
+  // never push their copy to the cloud store (a stale local DB would wipe
+  // production data).
+  return !!(process.env.VERCEL && process.env.BLOB_READ_WRITE_TOKEN);
+}
+function getBlobLib() {
+  if (!_blobLib) { try { _blobLib = require('@vercel/blob'); } catch (e) { _blobLib = null; } }
+  return _blobLib;
+}
+// Returns { buffer } when a blob exists, { buffer: null } when none exists,
+// or throws when something went wrong (caller must NOT overwrite the cloud
+// copy in that case - a transient failure must never wipe real data).
+async function loadDbFromBlob() {
+  const blob = getBlobLib();
+  if (!blob) return { buffer: null };
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
+  const res = await blob.list({ prefix: 'crm.db', token });
+  const entry = (res.blobs || []).find(b => b.pathname === 'crm.db');
+  if (!entry || !entry.url) return { buffer: null };
+  // Private blobs must be downloaded with the token - list entries have no
+  // arrayBuffer() helper, so fetch the download URL directly.
+  const resp = await fetch(entry.url, { headers: { authorization: `Bearer ${token}` } });
+  if (!resp.ok) throw new Error('Blob download failed with status ' + resp.status);
+  const buf = Buffer.from(await resp.arrayBuffer());
+  return { buffer: buf.length ? buf : null };
+}
+
+let _lastUploadHash = null, _uploading = false, _uploadPending = false;
+let _restoredFromBlob = false;
+
+// Tables that have a natural unique key besides id - used when merging the
+// cloud copy into this instance's copy so concurrent instances never wipe
+// each other's data (a save always ADDS to the cloud copy, never replaces).
+const MERGE_KEYS = {
+  invoices: 'invoice_number', quotations: 'quote_number', contracts: 'contract_number',
+  complaints: 'complaint_number', service_assignments: 'assignment_number',
+  certificates: 'certificate_number', expenses: 'expense_number',
+  receipt_vouchers: 'voucher_number', payment_vouchers: 'voucher_number',
+  inventory: 'sku', settings: 'key', technicians: 'username'
+};
+function mergeBufferIntoDb(buffer) {
+  try {
+    const remote = new SQL.Database(new Uint8Array(buffer));
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all().map(r => r.name);
+    let merged = 0;
+    for (const t of tables) {
+      let res; try { res = remote.prepare(`SELECT * FROM ${t}`).all(); } catch (e) { continue; }
+      if (!res.length) continue;
+      const cols = Object.keys(res[0]);
+      const key = MERGE_KEYS[t] && cols.includes(MERGE_KEYS[t]) ? MERGE_KEYS[t] : (cols.includes('id') ? 'id' : null);
+      if (!key) continue;
+      const ins = db.prepare(`INSERT OR IGNORE INTO ${t} (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`);
+      for (const row of res) {
+        const dup = key === 'id'
+          ? db.prepare(`SELECT 1 FROM ${t} WHERE id = ?`).get(row.id)
+          : db.prepare(`SELECT 1 FROM ${t} WHERE ${key} = ?`).get(row[key]);
+        if (!dup) { ins.run(cols.map(c => row[c])); merged++; }
+      }
+    }
+    if (merged) console.log('Merged ' + merged + ' row(s) from cloud copy before saving');
+  } catch (e) {
+    console.error('Merge with cloud copy failed:', e.message);
+  }
+}
+let _lastBackupAt = 0;
+const BACKUP_INTERVAL_MS = 6 * 60 * 60 * 1000; // one dated backup per instance per 6h max
+// Keep a dated copy of the database next to the main one, so data can always
+// be restored even after accidental deletes or bad overwrites.
+async function backupDb(buffer) {
+  const blob = getBlobLib();
+  if (!blob) return;
+  const now = Date.now();
+  if (now - _lastBackupAt < BACKUP_INTERVAL_MS) return;
+  try {
+    const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12);
+    await blob.put(`backups/crm-${stamp}.db`, buffer, {
+      token: process.env.BLOB_READ_WRITE_TOKEN,
+      access: 'private',
+      addRandomSuffix: false,
+      allowOverwrite: true
+    });
+    _lastBackupAt = now;
+    console.log('Cloud backup saved: backups/crm-' + stamp + '.db');
+    // Keep only the newest 30 backups
+    try {
+      const res = await blob.list({ prefix: 'backups/', token: process.env.BLOB_READ_WRITE_TOKEN, limit: 100 });
+      const list = (res.blobs || []).slice().sort((a, b) => String(a.pathname).localeCompare(String(b.pathname)));
+      while (list.length > 30) {
+        const old = list.shift();
+        await blob.del(old.pathname, { token: process.env.BLOB_READ_WRITE_TOKEN });
+      }
+    } catch (e) { /* cleanup is best-effort */ }
+  } catch (e) { console.error('Cloud backup failed:', e.message); }
+}
+// Save locally AND to the cloud blob (no-op cloud part when not on Vercel)
+async function persistDb() {
+  saveDb();
+  if (!blobEnabled() || !db || !db._db || !getBlobLib()) return;
+  // Never push the bundled fallback snapshot over a cloud copy we failed to
+  // restore - that would wipe real data. Per-request persists are still allowed
+  // once this instance has actually handled a write on restored/seeded data.
+  if (!_restoredFromBlob && process.env.VERCEL && !persistDb._allowInitUpload) return;
+  if (_uploading) { _uploadPending = true; return; }
+  _uploading = true;
+  try {
+    do {
+      _uploadPending = false;
+      // SAFETY: pull the newest cloud copy and merge it in before uploading.
+      // Several instances can run in parallel - without this, an instance that
+      // started earlier could upload its old copy and wipe newer data saved
+      // through another instance. Merging means a save only ever ADDS data.
+      try {
+        const latest = (await loadDbFromBlob()).buffer;
+        if (latest) mergeBufferIntoDb(latest);
+      } catch (e) {
+        console.error('Pre-upload merge skipped (cloud unreadable):', e.message);
+      }
+      const buffer = Buffer.from(db._db.export());
+      const hash = crypto.createHash('md5').update(buffer).digest('hex');
+      if (hash === _lastUploadHash) continue; // unchanged - skip upload
+      try {
+        await getBlobLib().put('crm.db', buffer, {
+          token: process.env.BLOB_READ_WRITE_TOKEN,
+          access: 'private',
+          addRandomSuffix: false,
+          allowOverwrite: true
+        });
+        _lastUploadHash = hash;
+        backupDb(buffer); // dated safety copy (rate-limited)
+      } catch (e) {
+        console.error('Blob save failed:', e.message);
+      }
+    } while (_uploadPending);
+  } finally {
+    _uploading = false;
+  }
+}
+
+let initPromise = null;
+
+// Idempotent - safe to call from multiple entry points / concurrent requests
+function initializeDatabase() {
+  if (!initPromise) {
+    initPromise = doInitialize().catch(err => { initPromise = null; throw err; });
+  }
+  return initPromise;
+}
+
+async function doInitialize() {
+  // Load the WASM binary explicitly - on Vercel sql.js cannot locate the .wasm
+  // file via its default async fetch/path logic inside the bundled function.
+  let sqlOptions;
+  try {
+    // Statically resolvable path so serverless bundlers (Vercel nft) include the .wasm
+    const wasmPath = require.resolve('sql.js/dist/sql-wasm.wasm');
+    sqlOptions = { wasmBinary: fs.readFileSync(wasmPath) };
+  } catch (e) {
+    sqlOptions = undefined; // fall back to sql.js default loading
+  }
+  SQL = await initSqlJs(sqlOptions);
+
+  // On Vercel /tmp is wiped between cold starts. Prefer the cloud copy (Vercel
+  // Blob) which survives restarts and redeploys; fall back to the bundled crm.db snapshot.
+  let blobMissing = false; // true only when no cloud copy exists at all
+  if (process.env.VERCEL) {
+    let blobBuf = null;
+    if (blobEnabled()) {
+      try {
+        blobBuf = (await loadDbFromBlob()).buffer;
+        blobMissing = !blobBuf;
+      } catch (e) {
+        // Cloud copy exists but could not be read right now - keep serving from
+        // the fallback snapshot but NEVER upload over the cloud copy.
+        console.error('Blob load failed (will not overwrite cloud copy):', e.message);
+        blobMissing = false;
+      }
+    }
+    if (blobBuf) {
+      try { fs.writeFileSync(dbPath, blobBuf); _restoredFromBlob = true; } catch (e) { console.error('Failed to restore blob db to /tmp:', e.message); }
+    } else {
+      const bundled = path.join(__dirname, 'crm.db');
+      if (!fs.existsSync(dbPath) && fs.existsSync(bundled)) {
+        try { fs.copyFileSync(bundled, dbPath); } catch (e) { console.error('Failed to seed /tmp db:', e.message); }
+      }
+    }
+  }
+
   // Load existing database or create new one
   if (fs.existsSync(dbPath)) {
     const fileBuffer = fs.readFileSync(dbPath);
@@ -179,6 +382,12 @@ async function initializeDatabase() {
       assignment_id INTEGER, action TEXT NOT NULL, latitude REAL, longitude REAL,
       address TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS technician_locations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, technician_id INTEGER NOT NULL,
+      latitude REAL NOT NULL, longitude REAL NOT NULL, accuracy REAL,
+      speed REAL, battery REAL, note TEXT,
+      recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
     CREATE TABLE IF NOT EXISTS call_history (
       id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id INTEGER, lead_id INTEGER,
       employee_id INTEGER, direction TEXT DEFAULT 'outbound', duration INTEGER DEFAULT 0,
@@ -260,12 +469,29 @@ async function initializeDatabase() {
   seedDefaultData();
   runMigrations();
   saveDb();
-  
-  // Auto-save every 5 seconds
-  setInterval(saveDb, 5000);
+
+  // Push the initialized state to cloud storage only on a genuine first deploy
+  // (no cloud copy existed at all). NEVER upload when the cloud copy exists but
+  // failed to load - that would wipe the user's real data.
+  if (process.env.VERCEL && blobEnabled() && !_restoredFromBlob && blobMissing) {
+    persistDb._allowInitUpload = true;
+    persistDb()
+      .then(() => { _restoredFromBlob = true; }) // this instance is now the canonical copy
+      .catch(() => {})
+      .finally(() => { persistDb._allowInitUpload = false; });
+  }
+
+  // Auto-save every 5 seconds (skip on serverless where timers are frozen)
+  if (!process.env.VERCEL) {
+    setInterval(saveDb, 5000);
+  }
 }
 
 function seedDefaultData() {
+  // Seed only a brand-new database. If settings already exist the DB was initialized
+  // before (even if all business data was cleared) - do not re-insert demo data.
+  const settingsCount = db.prepare('SELECT COUNT(*) as count FROM settings').get();
+  if (settingsCount && settingsCount.count > 0) return;
   const customerCount = db.prepare('SELECT COUNT(*) as count FROM customers').get();
   if (customerCount && customerCount.count > 0) return;
 
@@ -405,6 +631,35 @@ function seedDefaultData() {
 
 function getDb() { return db; }
 
+// ---------- FRESH-READ: the cloud copy is the ONLY source of truth ----------
+// Vercel runs several function instances in parallel and old deployments keep
+// warm instances alive. Any instance that keeps its own copy across requests
+// can serve or upload stale data (which looks like data being deleted).
+// So every request downloads the newest cloud copy first - no instance ever
+// works on a stale copy.
+let _refreshing = null;
+async function refreshDbFromCloud() {
+  if (!process.env.VERCEL || !blobEnabled() || !SQL) return;
+  if (!_refreshing) {
+    _refreshing = (async () => {
+      try {
+        const buf = (await loadDbFromBlob()).buffer;
+        if (!buf) return;
+        db = new DbWrapper(new SQL.Database(new Uint8Array(buf)));
+        try { fs.writeFileSync(dbPath, buf); } catch (e) { /* /tmp full - non-fatal */ }
+        _restoredFromBlob = true;
+        // Fresh copy is already the latest state - don't re-upload it
+        _lastUploadHash = crypto.createHash('md5').update(buf).digest('hex');
+      } catch (e) {
+        // Cloud unreadable right now - keep the in-memory copy; the merge in
+        // persistDb stops us from overwriting newer cloud data on the next save.
+        console.error('Cloud refresh failed:', e.message);
+      } finally { _refreshing = null; }
+    })();
+  }
+  return _refreshing;
+}
+
 function runMigrations() {
   // Add new columns to existing tables if they don't exist
   const addCols = (table, cols) => {
@@ -420,7 +675,7 @@ function runMigrations() {
     ['sac_code','TEXT'],['warranty_from','TEXT'],['warranty_to','TEXT'],['warranty_note','TEXT'],
     ['contact_person','TEXT'],['booking_id','TEXT'],['service_period','TEXT'],
     ['service_count','INTEGER'],['per_service_rate','REAL'],['amount_in_words','TEXT'],
-    ['terms_conditions','TEXT'],['invoice_type','TEXT',"'standard'"]
+    ['terms_conditions','TEXT'],['invoice_type','TEXT',"'standard'"],['bill_extra','TEXT']
   ]);
   addCols('certificates', [
     ['customer_address','TEXT'],['contact_period','TEXT'],['method','TEXT'],
@@ -431,7 +686,21 @@ function runMigrations() {
     ['sac_code','TEXT'],['warranty_note','TEXT'],['contact_person','TEXT'],['terms_conditions','TEXT']
   ]);
   addCols('customers', [['gstin','TEXT'],['contact_person','TEXT']]);
+  addCols('technicians', [['username','TEXT'],['password','TEXT']]);
+
+  // Backfill technician app credentials (username + default PIN 1234)
+  try {
+    const noUser = db.prepare("SELECT id, name FROM technicians WHERE username IS NULL OR username = ''").all();
+    noUser.forEach(t => {
+      const base = String(t.name || 'tech').toLowerCase().replace(/[^a-z0-9]/g, '') || ('tech' + t.id);
+      let uname = base, n = 1;
+      while (db.prepare('SELECT id FROM technicians WHERE username = ? AND id != ?').get(uname, t.id)) { uname = base + (++n); }
+      // '1234' sha256-hashed (same scheme as login/reset endpoints)
+      db.prepare('UPDATE technicians SET username = ?, password = ? WHERE id = ?')
+        .run(uname, '03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4', t.id);
+    });
+  } catch (e) { /* non-fatal */ }
   console.log('Migrations checked.');
 }
 
-module.exports = { getDb, initializeDatabase, saveDb, get db() { return db; } };
+module.exports = { getDb, initializeDatabase, saveDb, persistDb, refreshDbFromCloud, get db() { return db; } };

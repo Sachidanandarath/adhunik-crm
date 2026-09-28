@@ -17,19 +17,21 @@ router.get('/:id', (req, res) => {
   if (!customer) return res.status(404).json({ error: 'Customer not found' });
   const invoices = getDb().prepare('SELECT * FROM invoices WHERE customer_id = ? ORDER BY created_at DESC').all(req.params.id);
   const contracts = getDb().prepare('SELECT * FROM contracts WHERE customer_id = ?').all(req.params.id);
+  const quotations = getDb().prepare('SELECT * FROM quotations WHERE customer_id = ? ORDER BY created_at DESC').all(req.params.id);
   const services = getDb().prepare('SELECT * FROM service_assignments WHERE customer_id = ? ORDER BY scheduled_date DESC').all(req.params.id);
-  res.json({ ...customer, invoices, contracts, services });
+  res.json({ ...customer, invoices, contracts, quotations, services });
 });
 
 router.post('/', (req, res) => {
-  const { name, email, phone, address, city, state, zip, property_type, property_size, notes, status } = req.body;
-  const result = getDb().prepare('INSERT INTO customers (name, email, phone, address, city, state, zip, property_type, property_size, notes, status) VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(name, email, phone, address, city, state, zip, property_type, property_size, notes, status || 'active');
+  const { name, email, phone, address, city, state, zip, property_type, property_size, notes, status, gstin, contact_person } = req.body;
+  if (!name || !String(name).trim()) return res.status(400).json({ error: 'Customer name is required' });
+  const result = getDb().prepare('INSERT INTO customers (name, email, phone, address, city, state, zip, property_type, property_size, notes, status, gstin, contact_person) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)').run(String(name).trim(), email || '', phone || '', address || '', city || '', state || '', zip || '', property_type, property_size, notes, status || 'active', gstin, contact_person);
   res.json({ id: result.lastInsertRowid, message: 'Customer created' });
 });
 
 router.put('/:id', (req, res) => {
-  const { name, email, phone, address, city, state, zip, property_type, property_size, notes, status } = req.body;
-  getDb().prepare('UPDATE customers SET name=?, email=?, phone=?, address=?, city=?, state=?, zip=?, property_type=?, property_size=?, notes=?, status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?').run(name, email, phone, address, city, state, zip, property_type, property_size, notes, status, req.params.id);
+  const { name, email, phone, address, city, state, zip, property_type, property_size, notes, status, gstin, contact_person } = req.body;
+  getDb().prepare('UPDATE customers SET name=?, email=?, phone=?, address=?, city=?, state=?, zip=?, property_type=?, property_size=?, notes=?, status=?, gstin=?, contact_person=?, updated_at=CURRENT_TIMESTAMP WHERE id=?').run(name, email, phone, address, city, state, zip, property_type, property_size, notes, status, gstin, contact_person, req.params.id);
   res.json({ message: 'Customer updated' });
 });
 

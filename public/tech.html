@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#1e40af">
+<title>PestShield - Technician App</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { font-family:'Segoe UI',system-ui,sans-serif; background:#f1f5f9; color:#1e293b; min-height:100vh; }
+  .header { background:linear-gradient(135deg,#1e40af,#3b82f6); color:#fff; padding:16px 20px; display:flex; justify-content:space-between; align-items:center; }
+  .header h1 { font-size:17px; } .header .sub { font-size:11px; opacity:.85; }
+  .logout { background:rgba(255,255,255,.15); border:none; color:#fff; padding:7px 14px; border-radius:8px; font-size:12px; cursor:pointer; }
+  .container { max-width:480px; margin:0 auto; padding:14px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 4px rgba(0,0,0,.08); padding:16px; margin-bottom:14px; }
+  /* Login */
+  .login-wrap { display:flex; flex-direction:column; justify-content:center; min-height:80vh; padding:24px; }
+  .logo { text-align:center; margin-bottom:22px; }
+  .logo .shield { font-size:48px; } .logo h2 { color:#1e40af; margin-top:6px; } .logo p { color:#64748b; font-size:13px; }
+  .field { margin-bottom:14px; }
+  .field label { display:block; font-size:12px; font-weight:600; color:#64748b; margin-bottom:5px; text-transform:uppercase; letter-spacing:.4px; }
+  .field input { width:100%; padding:13px; border:1px solid #d1d5db; border-radius:10px; font-size:16px; outline:none; }
+  .field input:focus { border-color:#3b82f6; box-shadow:0 0 0 3px rgba(59,130,246,.15); }
+  .btn { display:block; width:100%; padding:14px; border:none; border-radius:10px; font-size:15px; font-weight:600; cursor:pointer; }
+  .btn-primary { background:linear-gradient(135deg,#1e40af,#3b82f6); color:#fff; }
+  .err { background:#fef2f2; color:#dc2626; border:1px solid #fecaca; padding:10px; border-radius:8px; font-size:13px; margin-bottom:12px; display:none; }
+  /* Main screen */
+  .status-pill { display:inline-flex; align-items:center; gap:6px; padding:5px 12px; border-radius:999px; font-size:12px; font-weight:600; }
+  .dot { width:9px; height:9px; border-radius:50%; }
+  .dot.green { background:#10b981; } .dot.red { background:#ef4444; } .dot.gray { background:#94a3b8; }
+  .track-toggle { margin-top:14px; padding:18px; font-size:17px; border-radius:14px; border:none; width:100%; font-weight:700; cursor:pointer; transition:.2s; }
+  .track-off { background:#10b981; color:#fff; } .track-on { background:#ef4444; color:#fff; }
+  .stats-row { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-top:12px; }
+  .stat { background:#f8fafc; border-radius:10px; padding:10px; text-align:center; }
+  .stat .v { font-size:15px; font-weight:700; } .stat .l { font-size:10px; color:#64748b; text-transform:uppercase; }
+  .action-row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .btn-checkin { background:#eff6ff; color:#1e40af; border:1px solid #bfdbfe; padding:13px; border-radius:10px; font-weight:600; font-size:14px; cursor:pointer; }
+  .btn-checkout { background:#fff7ed; color:#c2410c; border:1px solid #fed7aa; padding:13px; border-radius:10px; font-weight:600; font-size:14px; cursor:pointer; }
+  .section-title { font-size:13px; font-weight:700; color:#64748b; text-transform:uppercase; letter-spacing:.5px; margin-bottom:10px; }
+  .job { padding:10px; background:#f8fafc; border-left:3px solid #3b82f6; border-radius:8px; margin-bottom:8px; font-size:13px; }
+  .job .jt { font-weight:600; } .job .jm { color:#64748b; font-size:12px; margin-top:2px; }
+  .toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%); background:#1e293b; color:#fff; padding:12px 20px; border-radius:10px; font-size:13px; opacity:0; transition:.3s; z-index:99; pointer-events:none; max-width:90%; text-align:center; }
+  .toast.show { opacity:1; }
+  .hidden { display:none !important; }
+  .hint { font-size:12px; color:#94a3b8; text-align:center; margin-top:10px; line-height:1.5; }
+</style>
+</head>
+<body>
+
+<!-- ===== LOGIN ===== -->
+<div id="loginScreen" class="login-wrap">
+  <div class="logo">
+    <div class="shield">🛡️</div>
+    <h2>PestShield Technician</h2>
+    <p>Live Location Tracking App</p>
+  </div>
+  <div class="card">
+    <div id="loginErr" class="err"></div>
+    <div class="field"><label>Technician ID (Username)</label><input type="text" id="loginUser" placeholder="e.g. suresh" autocomplete="username"></div>
+    <div class="field"><label>Password / PIN</label><input type="password" id="loginPass" placeholder="Enter PIN" autocomplete="current-password"></div>
+    <button class="btn btn-primary" onclick="doLogin()">Login</button>
+    <p class="hint">Ask your office admin for your ID and PIN.<br>Default PIN for new technicians is <b>1234</b>.</p>
+  </div>
+</div>
+
+<!-- ===== MAIN ===== -->
+<div id="mainScreen" class="hidden">
+  <div class="header">
+    <div><h1>🛡️ PestShield Technician</h1><div class="sub" id="techName">-</div></div>
+    <button class="logout" onclick="logout()">Logout</button>
+  </div>
+  <div class="container">
+    <div class="card">
+      <span class="status-pill" id="trackStatus"><span class="dot gray" id="trackDot"></span><span id="trackLabel">Tracking OFF</span></span>
+      <button id="trackBtn" class="track-toggle track-off" onclick="toggleTracking()">▶ START LIVE TRACKING</button>
+      <div class="stats-row">
+        <div class="stat"><div class="v" id="statSent">0</div><div class="l">Points Sent</div></div>
+        <div class="stat"><div class="v" id="statBattery">-</div><div class="l">Battery</div></div>
+        <div class="stat"><div class="v" id="statLast">-</div><div class="l">Last Sent</div></div>
+      </div>
+      <p class="hint" id="gpsHint">Keep this app open while working. Your live location is sent to the office every 20 seconds.</p>
+    </div>
+    <div class="card">
+      <div class="section-title">Site Check</div>
+      <div class="action-row">
+        <button class="btn-checkin" onclick="checkAction('check_in')">📍 Check-In at Site</button>
+        <button class="btn-checkout" onclick="checkAction('check_out')">🚪 Check-Out</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="section-title">My Recent Jobs</div>
+      <div id="jobsList"><p class="hint">Loading...</p></div>
+    </div>
+    <div class="card">
+      <div class="section-title">Office CRM</div>
+      <button class="btn btn-primary" onclick="openCRM()">🗂️ Open Full CRM (Dashboard, Customers, Billing...)</button>
+      <p class="hint">Opens the complete CRM inside this app. Use your phone's back button to return here.</p>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API_BASE = window.CRM_API_BASE || '';
+let TECH = null, TOKEN = localStorage.getItem('tech_token') || null;
+let watchId = null, sendTimer = null, lastPos = null, sentCount = 0;
+
+function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2600); }
+
+async function api(path, opts = {}) {
+  opts.headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
+  if (TOKEN) opts.headers['x-tech-token'] = TOKEN;
+  const r = await fetch(API_BASE + path, opts);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || ('Error ' + r.status));
+  return data;
+}
+
+// ---------- LOGIN ----------
+async function doLogin() {
+  const username = document.getElementById('loginUser').value.trim();
+  const password = document.getElementById('loginPass').value;
+  const errEl = document.getElementById('loginErr');
+  errEl.style.display = 'none';
+  if (!username || !password) { errEl.textContent = 'Enter your ID and password'; errEl.style.display = 'block'; return; }
+  try {
+    const data = await api('/api/auth/tech/login', { method: 'POST', body: JSON.stringify({ username, password }) });
+    TOKEN = data.token; TECH = data.technician;
+    localStorage.setItem('tech_token', TOKEN);
+    showMain();
+  } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+}
+document.getElementById('loginPass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+
+function logout() {
+  stopTracking();
+  TOKEN = null; TECH = null;
+  localStorage.removeItem('tech_token');
+  document.getElementById('mainScreen').classList.add('hidden');
+  document.getElementById('loginScreen').classList.remove('hidden');
+}
+
+async function showMain() {
+  document.getElementById('loginScreen').classList.add('hidden');
+  document.getElementById('mainScreen').classList.remove('hidden');
+  try {
+    const me = await api('/api/auth/tech/me');
+    TECH = me.technician;
+    document.getElementById('techName').textContent = `${TECH.name} • ${TECH.specialization || 'Technician'}`;
+    const list = document.getElementById('jobsList');
+    if (!me.jobs || !me.jobs.length) list.innerHTML = '<p class="hint">No jobs assigned yet.</p>';
+    else list.innerHTML = me.jobs.map(j => `<div class="job"><div class="jt">${esc(j.service_type || 'Service')}${j.customer_name ? ' — ' + esc(j.customer_name) : ''}</div><div class="jm">📅 ${fmtDate(j.scheduled_date)}${j.scheduled_time ? ' • ' + esc(j.scheduled_time) : ''} • ${esc(j.status||'')}</div>${j.address ? `<div class="jm">📍 ${esc(j.address)}</div>` : ''}</div>`).join('');
+  } catch (e) {
+    if (/login again/i.test(e.message)) return logout();
+    toast(e.message);
+  }
+  readBattery();
+}
+
+// ---------- GPS TRACKING ----------
+function toggleTracking() { watchId !== null ? stopTracking() : startTracking(); }
+
+function startTracking() {
+  if (!navigator.geolocation) { toast('GPS not supported on this device'); return; }
+  watchId = navigator.geolocation.watchPosition(pos => { lastPos = pos; },
+    err => { document.getElementById('gpsHint').textContent = '⚠️ GPS error: ' + err.message + '. Please enable location permission for this app.'; },
+    { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 });
+  sendTimer = setInterval(sendPosition, 20000);
+  sendPosition();
+  document.getElementById('trackBtn').textContent = '⏹ STOP TRACKING';
+  document.getElementById('trackBtn').className = 'track-toggle track-on';
+  document.getElementById('trackDot').className = 'dot green';
+  document.getElementById('trackLabel').textContent = 'Tracking LIVE';
+  toast('Live tracking started');
+}
+
+function stopTracking() {
+  if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+  if (sendTimer) { clearInterval(sendTimer); sendTimer = null; }
+  document.getElementById('trackBtn').textContent = '▶ START LIVE TRACKING';
+  document.getElementById('trackBtn').className = 'track-toggle track-off';
+  document.getElementById('trackDot').className = 'dot gray';
+  document.getElementById('trackLabel').textContent = 'Tracking OFF';
+}
+
+async function sendPosition(action) {
+  let pos = lastPos;
+  if (!pos) { // fetch a fresh fix
+    try { pos = await new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, rej, { enableHighAccuracy: true, timeout: 15000 })); lastPos = pos; }
+    catch (e) { document.getElementById('gpsHint').textContent = '⚠️ Cannot get GPS signal. Go outside / enable location.'; return; }
+  }
+  try {
+    const payload = { latitude: pos.coords.latitude, longitude: pos.coords.longitude, accuracy: Math.round(pos.coords.accuracy || 0), speed: pos.coords.speed ? +(pos.coords.speed * 3.6).toFixed(1) : null, battery: currentBattery, token: TOKEN };
+    if (action) payload.action = action;
+    await api(`/api/technicians/${TECH.id}/location`, { method: 'POST', body: JSON.stringify(payload) });
+    sentCount++;
+    document.getElementById('statSent').textContent = sentCount;
+    document.getElementById('statLast').textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    if (action) toast(action === 'check_in' ? '✅ Checked in - location recorded' : '🚪 Checked out - location recorded');
+  } catch (e) {
+    if (/login again|Invalid token/i.test(e.message)) return logout();
+    toast('Send failed: ' + e.message);
+  }
+}
+
+function checkAction(action) { sendPosition(action); }
+
+// ---------- OPEN FULL CRM ----------
+function openCRM() {
+  // Full CRM web app, same server (works in browser and inside the APK WebView)
+  window.location.href = './index.html?from=tech';
+}
+
+// ---------- BATTERY ----------
+let currentBattery = null;
+function readBattery() {
+  if (navigator.getBattery) navigator.getBattery().then(b => {
+    const upd = () => { currentBattery = Math.round(b.level * 100); document.getElementById('statBattery').textContent = currentBattery + '%'; };
+    upd(); b.addEventListener('levelchange', upd);
+  });
+}
+
+// ---------- UTILS ----------
+function esc(s) { return s == null ? '' : String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+function fmtDate(d) { if (!d) return ''; try { return new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }); } catch (e) { return d; } }
+
+// Auto-login with saved token
+(async function () {
+  if (TOKEN) { try { await showMain(); } catch (e) {} }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+bk-*.db
+blob-*.db
+merged-restore.db
+blob-check*.db
+blob-dump.db
+inspect-blob.cjs
+backups-local/
+sync-bundle.cjs
+count-tables.cjs
+restore-upload.cjs

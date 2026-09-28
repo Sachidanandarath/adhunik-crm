@@ -1,0 +1,15 @@
+{
+  "name": "AdhunikPestControl CRM",
+  "short_name": "AdhunikPC",
+  "description": "Adhunik Pest Control Pvt. Ltd. - CRM for customers, invoices, quotations and services",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#ffffff",
+  "theme_color": "#1e40af",
+  "icons": [
+    { "src": "/logo.png", "sizes": "any", "type": "image/png", "purpose": "any" },
+    { "src": "/logo.jpg", "sizes": "any", "type": "image/jpeg", "purpose": "any maskable" }
+  ]
+}

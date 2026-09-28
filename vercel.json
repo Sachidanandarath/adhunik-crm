@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "functions": {
+    "server.js": {
+      "maxDuration": 30,
+      "includeFiles": "public/**,crm.db"
+    },
+    "api/index.js": {
+      "maxDuration": 30,
+      "includeFiles": "public/**,crm.db"
+    }
+  },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/index" },
+    { "source": "/((?!api/index).*)", "destination": "/api/index" }
+  ]
+}
